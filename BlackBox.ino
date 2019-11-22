@@ -22,6 +22,8 @@
 #include <RFID.h>
 #include <aes.hpp>
 
+#include <TimerOne.h>
+
 // Выбранные цифровые выводы
 #define SS_RFID   10
 #define RST_RFID  9
@@ -83,6 +85,27 @@ const uint8_t* generateKey(byte* nuid, String* master) {
     key[i] = salt[j++];
 
   return key;
+}
+
+// 2 минуты
+const byte deauthTime = 10;
+
+volatile uint8_t* key;
+volatile int lastLoggedIn = -1;
+byte lastUsedCard[4];
+
+void countSecond() {
+//  Serial.println("Tickin'");
+  
+  if (lastLoggedIn != -1) {
+    lastLoggedIn++;
+//    Serial.println(lastLoggedIn);
+  }
+  if (lastLoggedIn == deauthTime) {
+//    Serial.println("Ban");
+    lastLoggedIn = -1;
+    delete key;
+  }
 }
 
 void setup() {
@@ -164,8 +187,13 @@ void setup() {
   }
   if (!SD.exists("usr/")) {
     //debugPrintln("Создаю директорию usr/...");
+    Serial.println("# USR/ created");
     SD.mkdir("usr");
   }
+
+  // Инициализация секундного таймера
+  Timer1.initialize(1000000);
+  Timer1.attachInterrupt(countSecond);
 
   //debugPrintln();
   //debugPrintln("Инициализация выполнена.");
@@ -200,7 +228,7 @@ bool readRFID() {
   digitalWrite(LED_BUILTIN, HIGH);
   if (rfid.isCard()) {
     // Убеждаемся, что NUID было успешно прочитано
-    if (rfid.readCardSerial()) {
+    if (rfid.readCardSerial()) {  
       //debugPrintln("NUID прочитан");
 
       /*if ( matchesNUID(previousCardNUID, rfid.serNum) ) {
@@ -221,6 +249,12 @@ bool readRFID() {
   }
 
   return false;
+
+  /*for (int i = 0; i < 4; i++)
+    if (Serial.available()) rfid.serNum[i] = Serial.read();
+    else return false;
+
+  return true;*/
 }
 
 String fileReadUntil(char stp) {
@@ -287,14 +321,68 @@ void dumpBufferHex(uint8_t buf[], size_t len) {
   Serial.println("'");
 }
 
+struct AES_ctx ctx;
+//typedef void (*void_login_callback)(bool);
+void loginProcess(volatile uint8_t* key, void (*cb)(bool)) {
+  Serial.print("# ");
+  for (byte i = 0; i < 32; i++) {
+    Serial.print(key[i]); Serial.print(' ');
+  }
+  Serial.println();
+
+  File directory = SD.open("usr");
+  if (!directory) {
+    Serial.println("# Failed to open a directory");
+  }
+  bool isUserFound = false;
+  while (true) {
+    f = directory.openNextFile();
+    if (!f) {
+      Serial.println("# Breaking...");
+      break;
+    }
+
+    String n = f.name();
+
+    AES_init_ctx_iv(&ctx, key, salt);
+    if (!f.isDirectory() && n.endsWith(".USR")) {
+      Serial.println("# " + n);
+      if (f.available()) {
+        fileReadBlock();
+        AES_CBC_decrypt_buffer(&ctx, blockBuffer, 16);
+        Serial.print("# "); dumpBuffer(blockBuffer, 16);
+
+        if (strcmp(blockBuffer, "hfile") == 0) {
+          isUserFound = true;
+          break;
+        }
+      }
+    }
+
+//    if (isUserFound) break;
+
+    f.close();
+  }
+  directory.close();
+
+  cb(isUserFound);
+  f.close();
+}
+
+void loginProcess(String* master, void (*cb)(bool)) {
+  key = generateKey(rfid.serNum, master);
+  
+  loginProcess(key, cb);
+}
+
 String command;
 
 bool isUsernameRequired = false,
      isMasterRequired   = false,
      isUserCreation     = false,
      isLoginProcess     = false;
-
-struct AES_ctx ctx;
+     
+//uint8_t* key; Создание переменной перенесено наверх
 void loop() {
   // Рутины с таймером, например отсчитывания времени после прикладывания RFID
 
@@ -358,7 +446,7 @@ void loop() {
       //debugPrintln(m);
 
       if (isUserCreation) {
-        auto key = generateKey(rfid.serNum, &m);
+        key = generateKey(rfid.serNum, &m);
 
         Serial.print("# ");
         for (byte i = 0; i < 32; i++) {
@@ -419,61 +507,29 @@ void loop() {
         delete key;
       }
       else if (isLoginProcess) {
-        auto key = generateKey(rfid.serNum, &m);
-
-        Serial.print("# ");
-        for (byte i = 0; i < 32; i++) {
-          Serial.print(key[i]); Serial.print(' ');
-        }
-        Serial.println();
-
-        File directory = SD.open("usr/");
-        bool isUserFound = false;
-        while (true) {
-          f = directory.openNextFile();
-          if (!f) {
-            Serial.println("Breaking...");
-            break;
+        loginProcess(&m, [](bool isUserFound) {
+          if (!isUserFound) {
+            Serial.println("masterincorrect");
+            delete key;
+            return;
           }
-
-          String n = f.name();
-
-          AES_init_ctx_iv(&ctx, key, salt);
-          if (!f.isDirectory() && n.endsWith(".USR")) {
-            Serial.println("# " + n);
-            if (f.available()) {
-              fileReadBlock();
-              AES_CBC_decrypt_buffer(&ctx, blockBuffer, 16);
-              Serial.print("# "); dumpBuffer(blockBuffer, 16);
-
-              if (strcmp(blockBuffer, "hfile") == 0) {
-                isUserFound = true;
-              }
-            }
+          else {
+            fileReadBlock();
+            AES_CBC_decrypt_buffer(&ctx, blockBuffer, 16);
+            Serial.print("username ");
+            Serial.write(blockBuffer, 16);
+            Serial.println();
+        
+            // TODO: Service print
+            Serial.print("# Current Timer: ");
+            Serial.println(lastLoggedIn);
+            lastLoggedIn = 0;
+            copyNUID(rfid.serNum, lastUsedCard);
           }
+        });
 
-          if (isUserFound) break;
-
-          f.close();
-        }
-        directory.close();
-
-        if (!isUserFound) {
-          Serial.println("masterincorrect");
-          delete key;
-          return;
-        }
-        else {
-          fileReadBlock();
-          AES_CBC_decrypt_buffer(&ctx, blockBuffer, 16);
-          Serial.print("username ");
-          Serial.write(blockBuffer, 16);
-          Serial.println();
-
-          f.close();
-        }
-
-        delete key;
+        // delete key;
+        // Ключ удалится таймером автоматически
         isLoginProcess = false;
       }
 
@@ -501,6 +557,16 @@ void loop() {
 
       if (!cardExists) {
         Serial.println("nosuchcard");
+        return;
+      }
+
+      // Последний логин был в допустимых рамках по времени
+      if (lastLoggedIn != -1 && matchesNUID(lastUsedCard, rfid.serNum)) {
+        loginProcess(key, [](bool isUserFound) {
+          Serial.println("Yeyy!");
+        });
+        lastLoggedIn = 0;
+
         return;
       }
 
