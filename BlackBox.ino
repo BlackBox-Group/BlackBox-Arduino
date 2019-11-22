@@ -414,6 +414,7 @@ void loop() {
 
         f.close();
         isUserCreation = false;
+        Serial.println("usercreated");
 
         delete key;
       }
