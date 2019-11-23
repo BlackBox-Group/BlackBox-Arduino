@@ -209,8 +209,8 @@ bool readRFID() {
         else {
         copyNUID(rfid.serNum, previousCardNUID);*/
 
-      //debugPrint("Прочитанная карта: ");
-      //debugPrintln( nuidToStr(rfid.serNum) );
+      Serial.print("# Read card: ");
+      Serial.println( nuidToStr(rfid.serNum) );
       /*}*/
 
       // Пауза, чтобы человек успел убрать карту от сенсора
@@ -523,11 +523,16 @@ void loop() {
       //debugPrintln("Используем прочитанную карту, чтобы авторизоваться");
 
       f = SD.open("cards.txt");
+      if (!f) {
+        Serial.println("# Can't open cards.txt");
+      }
       String cardID = nuidToStr(rfid.serNum);
 
       bool cardExists = false;
       while (f.available()) {
         String nuid = fileReadUntil('\n');
+        Serial.print("# Read: ");
+        Serial.println(nuid);
         if (nuid == cardID) {
           cardExists = true;
           break;
