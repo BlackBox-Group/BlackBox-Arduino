@@ -223,6 +223,29 @@ bool readRFID() {
   return false;
 }
 
+// Количество циклов чтения карты, после которых происходит timeout 
+const int RFID_READ_CYCLES = 400; 
+bool awaitRFID() { 
+  int rfid_cnt = 0; 
+  // Some time 
+  while (rfid_cnt != RFID_READ_CYCLES && !readRFID()) { 
+    Serial.println(rfid_cnt); 
+    rfid_cnt++; 
+  } 
+  Serial.println("Aight imma head out"); 
+ 
+  // false - timeout, true - success 
+  if (rfid_cnt == RFID_READ_CYCLES) {  
+    digitalWrite(LED_BUILTIN, LOW); 
+    Serial.println("Nah fam");
+    return false;
+  } 
+  else { 
+    Serial.println("Hell ye fam"); 
+    return true;  
+  } 
+} 
+
 String fileReadUntil(char stp) {
   String s = "";
   while (f.available()) {
@@ -293,10 +316,36 @@ bool isUsernameRequired = false,
      isMasterRequired   = false,
      isUserCreation     = false,
      isLoginProcess     = false;
+ 
+// 2 минуты  
+const byte deauthTime = 10;  
+  
+uint8_t* key; 
+int lastLoggedIn = -1;  
+byte lastUsedCard[4]; 
+
+unsigned long timeNow;
 
 struct AES_ctx ctx;
 void loop() {
   // Рутины с таймером, например отсчитывания времени после прикладывания RFID
+  if (millis() - timeNow > 1000) {
+    timeNow = millis();
+    
+    if (lastLoggedIn != -1) { 
+    lastLoggedIn++; 
+//    Serial.println(lastLoggedIn); 
+    } 
+    if (lastLoggedIn == deauthTime) { 
+      Serial.println("# Auto-login is no longer available"); 
+      lastLoggedIn = -1; 
+      delete key; 
+    } 
+    
+    digitalWrite(LED_BUILTIN, HIGH); 
+    delay(100); 
+    digitalWrite(LED_BUILTIN, LOW); 
+  }
 
   // Обработка RFID карт
   // handleRFID();
@@ -312,9 +361,10 @@ void loop() {
 
     if (command == "usercreate") {
       Serial.println("putRFID");
-      while (!readRFID()) {
-        ; // Ожидаем корректного ввода карты
-      }
+      if (!awaitRFID()) { 
+        Serial.println("timeout"); 
+        return; 
+      } 
       //debugPrintln("Используем прочитанную карту, чтобы создать пользователя");
 
       f = SD.open("cards.txt");
@@ -358,7 +408,7 @@ void loop() {
       //debugPrintln(m);
 
       if (isUserCreation) {
-        auto key = generateKey(rfid.serNum, &m);
+        key = generateKey(rfid.serNum, &m);
 
         Serial.print("# ");
         for (byte i = 0; i < 32; i++) {
@@ -419,7 +469,7 @@ void loop() {
         delete key;
       }
       else if (isLoginProcess) {
-        auto key = generateKey(rfid.serNum, &m);
+        key = generateKey(rfid.serNum, &m);
 
         Serial.print("# ");
         for (byte i = 0; i < 32; i++) {
@@ -481,9 +531,10 @@ void loop() {
     }
     else if (command == "userlogin") {
       Serial.println("putRFID");
-      while (!readRFID()) {
-        ; // Ожидаем корректного ввода карты
-      }
+      if (!awaitRFID()) { 
+        Serial.println("timeout"); 
+        return; 
+      } 
       //debugPrintln("Используем прочитанную карту, чтобы авторизоваться");
 
       f = SD.open("cards.txt");
