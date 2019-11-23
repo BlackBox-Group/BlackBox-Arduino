@@ -22,6 +22,8 @@
 #include <RFID.h>
 #include <aes.hpp>
 
+#include <TimerOne.h>
+
 // Выбранные цифровые выводы
 #define SS_RFID   10
 #define RST_RFID  9
@@ -83,6 +85,32 @@ const uint8_t* generateKey(byte* nuid, String* master) {
     key[i] = salt[j++];
 
   return key;
+}
+
+// 2 минуты 
+const byte deauthTime = 10; 
+ 
+volatile uint8_t* key;
+volatile int lastLoggedIn = -1; 
+byte lastUsedCard[4]; 
+
+volatile bool timerIsRunning = false;
+void countSecond() {
+  if (lastLoggedIn != -1) {
+    lastLoggedIn++;
+//    Serial.println(lastLoggedIn);
+  }
+  if (lastLoggedIn == deauthTime) {
+    Serial.println("# Auto-login is no longer available");
+    lastLoggedIn = -1;
+    delete key;
+  }
+
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(100);
+  digitalWrite(LED_BUILTIN, LOW);
+
+  timerIsRunning = true;
 }
 
 void setup() {
@@ -167,6 +195,10 @@ void setup() {
     SD.mkdir("usr");
   }
 
+  // Инициализация секундного таймера 
+  Timer1.initialize(1000000); 
+  Timer1.attachInterrupt(countSecond);
+
   //debugPrintln();
   //debugPrintln("Инициализация выполнена.");
   Serial.println("# OK.");
@@ -198,6 +230,8 @@ String nuidToStr(byte nuid[]) {
 bool readRFID() {
   // Ожидание, пока новая карта появится на сенсоре
   digitalWrite(LED_BUILTIN, HIGH);
+  
+  Timer1.stop();
   if (rfid.isCard()) {
     // Убеждаемся, что NUID было успешно прочитано
     if (rfid.readCardSerial()) {
@@ -215,10 +249,12 @@ bool readRFID() {
 
       // Пауза, чтобы человек успел убрать карту от сенсора
       // delay(100);
-      digitalWrite(LED_BUILTIN, LOW);
+      digitalWrite(LED_BUILTIN, LOW);   
+      Timer1.resume();
       return true;
     }
   }
+  Timer1.resume();
 
   return false;
 }
@@ -273,6 +309,29 @@ void rm(File dir, String tempPath) {
   }
 }
 
+// Количество циклов чтения карты, после которых происходит timeout
+const int RFID_READ_CYCLES = 400;
+bool awaitRFID() {
+  int rfid_cnt = 0;
+  // Some time
+  while (rfid_cnt != RFID_READ_CYCLES && !readRFID()) {
+    Serial.println(rfid_cnt);
+    rfid_cnt++;
+  }
+  Serial.println("Aight imma head out");
+
+  // false - timeout, true - success
+  if (rfid_cnt == RFID_READ_CYCLES) { 
+    digitalWrite(LED_BUILTIN, LOW);
+    Serial.println("Nah fam");
+    return false;
+  }
+  else {
+    Serial.println("Hell ye fam");
+    return true; 
+  }
+}
+
 void dumpBuffer(uint8_t buf[], size_t len) {
   Serial.print("'");
   Serial.write(buf, len);
@@ -312,8 +371,10 @@ void loop() {
 
     if (command == "usercreate") {
       Serial.println("putRFID");
-      while (!readRFID()) {
-        ; // Ожидаем корректного ввода карты
+      Serial.flush();
+      if (!awaitRFID()) {
+        Serial.println("timeout");
+        return;
       }
       //debugPrintln("Используем прочитанную карту, чтобы создать пользователя");
 
@@ -358,7 +419,7 @@ void loop() {
       //debugPrintln(m);
 
       if (isUserCreation) {
-        auto key = generateKey(rfid.serNum, &m);
+        key = generateKey(rfid.serNum, &m);
 
         Serial.print("# ");
         for (byte i = 0; i < 32; i++) {
@@ -419,7 +480,7 @@ void loop() {
         delete key;
       }
       else if (isLoginProcess) {
-        auto key = generateKey(rfid.serNum, &m);
+        key = generateKey(rfid.serNum, &m);
 
         Serial.print("# ");
         for (byte i = 0; i < 32; i++) {
@@ -448,6 +509,9 @@ void loop() {
 
               if (strcmp(blockBuffer, "hfile") == 0) {
                 isUserFound = true;
+                
+                lastLoggedIn = 0;
+                copyNUID(rfid.serNum, lastUsedCard);
               }
             }
           }
@@ -473,7 +537,8 @@ void loop() {
           f.close();
         }
 
-        delete key;
+        // delete key; 
+        // Ключ удалится таймером автоматически 
         isLoginProcess = false;
       }
 
@@ -481,8 +546,10 @@ void loop() {
     }
     else if (command == "userlogin") {
       Serial.println("putRFID");
-      while (!readRFID()) {
-        ; // Ожидаем корректного ввода карты
+      Serial.flush();
+      if (!awaitRFID()) {
+        Serial.println("timeout");
+        return;
       }
       //debugPrintln("Используем прочитанную карту, чтобы авторизоваться");
 
@@ -501,6 +568,14 @@ void loop() {
 
       if (!cardExists) {
         Serial.println("nosuchcard");
+        return;
+      }
+
+      // Если последний логин был в допустимых рамках по времени
+      if (lastLoggedIn != -1 && matchesNUID(lastUsedCard, rfid.serNum)) {
+        Serial.println("Yay!");
+        lastLoggedIn = 0;
+ 
         return;
       }
 
