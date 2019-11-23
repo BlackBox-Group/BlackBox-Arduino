@@ -64,8 +64,9 @@ File f;
 
 // Максимум 14 будет использовано, но сам массив - iv
 const char salt[16] = "985e166be2e9d300";
-const uint8_t* generateKey(byte* nuid, String* master) {
-  uint8_t* key = new uint8_t[32];
+uint8_t key[32];
+void generateKey(byte* nuid, String* master) {
+//  uint8_t* key = new uint8_t[32];
   for (int i = 0; i < 4; i++)
     key[i] = nuid[i];
 
@@ -81,8 +82,6 @@ const uint8_t* generateKey(byte* nuid, String* master) {
 
   for (int i = 8 + mLen, j = 0; i < 32; i++)
     key[i] = salt[j++];
-
-  return key;
 }
 
 void setup() {
@@ -297,7 +296,6 @@ bool isUsernameRequired = false,
 // 2 минуты
 const byte deauthTime = 10;
 
-uint8_t* key;
 int lastLoggedIn = -1;
 byte lastUsedCard[4];
 
@@ -316,7 +314,6 @@ void loop() {
     if (lastLoggedIn == deauthTime) {
       Serial.println("# Auto-login is no longer available");
       lastLoggedIn = -1;
-      delete key;
     }
 
     digitalWrite(LED_BUILTIN, HIGH);
@@ -387,7 +384,7 @@ void loop() {
       //debugPrintln(m);
 
       if (isUserCreation) {
-        key = generateKey(rfid.serNum, &m);
+        generateKey(rfid.serNum, &m);
 
         Serial.print("# ");
         for (byte i = 0; i < 32; i++) {
@@ -444,11 +441,9 @@ void loop() {
         f.close();
         isUserCreation = false;
         Serial.println("usercreated");
-
-        delete key;
       }
       else if (isLoginProcess) {
-        key = generateKey(rfid.serNum, &m);
+        generateKey(rfid.serNum, &m);
 
         Serial.print("# ");
         for (byte i = 0; i < 32; i++) {
@@ -479,6 +474,8 @@ void loop() {
                 isUserFound = true;
                 copyNUID(rfid.serNum, lastUsedCard);
                 lastLoggedIn = 0;
+                Serial.println("# Auto-login for this card is enabled");
+                
                 break;
               }
             }
@@ -492,7 +489,6 @@ void loop() {
 
         if (!isUserFound) {
           Serial.println("masterincorrect");
-          delete key;
           return;
         }
         else {
@@ -505,7 +501,6 @@ void loop() {
           f.close();
         }
 
-        delete key;
         isLoginProcess = false;
       }
 
